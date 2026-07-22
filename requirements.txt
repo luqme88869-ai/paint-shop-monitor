@@ -4,4 +4,3 @@ numpy
 matplotlib
 gspread
 google-auth
-openpyxl
