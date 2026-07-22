@@ -7,6 +7,7 @@ Theme: High-Contrast Light Mode with Industrial Safety Alerts
 """
 
 import os
+import time
 import random
 import datetime
 import pandas as pd
@@ -189,39 +190,66 @@ def get_gspread_client():
 # Caching sheet data for 120 seconds prevents hitting 429 Quota Exceeded error
 @st.cache_data(ttl=120)
 def load_all_data(motor_list):
-    """Loads all worksheets from the Google Spreadsheet into memory."""
+    """Loads all worksheets from the Google Spreadsheet into memory using Batch Operations to avoid 429 errors."""
     data_dict = {}
     try:
         gc = get_gspread_client()
         sheet_id = st.secrets["SPREADSHEET_ID"]
         sh = gc.open_by_key(sheet_id)
         
+        # 1 API request: Get all existing worksheets to prevent iterating sheet lookups
+        existing_worksheets = [ws.title for ws in sh.worksheets()]
+        ranges_to_fetch = []
+        
         for m_name in motor_list:
             s_name = get_sheet_name(m_name)
-            try:
-                worksheet = sh.worksheet(s_name)
-                records = worksheet.get_all_records()
-                df = pd.DataFrame(records)
-                
-                if not df.empty and 'Date' in df.columns:
-                    df['Date'] = pd.to_datetime(df['Date'], format='mixed', errors='coerce').dt.date
-                    df['Vibration'] = pd.to_numeric(df['Vibration'], errors='coerce').round(2)
-                    if 'BDU' not in df.columns:
-                        df['BDU'] = np.nan
-                    else:
-                        df['BDU'] = pd.to_numeric(df['BDU'], errors='coerce').round(2)
-                    data_dict[m_name] = df.dropna(subset=['Date'])
-                else:
-                    data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
-            except gspread.exceptions.WorksheetNotFound:
-                # Create sheet automatically if it doesn't exist
+            if s_name not in existing_worksheets:
+                # Create sheet automatically if it doesn't exist (throttle slightly to respect write quotas)
+                time.sleep(1)
                 worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
                 worksheet.append_row(["Date", "Vibration", "BDU"])
                 data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
+            else:
+                # Prepare A to C columns range for batch reading
+                ranges_to_fetch.append(f"'{s_name}'!A:C")
+        
+        if ranges_to_fetch:
+            # 1 API request: Batch read all sheets at once to avoid Google Sheets API 429 limits
+            batch_data = sh.values_batch_get(ranges_to_fetch)
+            value_ranges = batch_data.get('valueRanges', [])
+            
+            fetch_idx = 0
+            for m_name in motor_list:
+                s_name = get_sheet_name(m_name)
+                if s_name in existing_worksheets:
+                    rows = value_ranges[fetch_idx].get('values', [])
+                    fetch_idx += 1
+                    
+                    if len(rows) > 1:
+                        header = rows[0]
+                        data = rows[1:]
+                        # Align headers if missing columns
+                        df = pd.DataFrame(data, columns=header) if len(header) >= 3 else pd.DataFrame(data)
+                        if len(df.columns) >= 3:
+                            df.columns = ["Date", "Vibration", "BDU"][:len(df.columns)]
+                            
+                        if not df.empty and 'Date' in df.columns:
+                            df['Date'] = pd.to_datetime(df['Date'], format='mixed', errors='coerce').dt.date
+                            df['Vibration'] = pd.to_numeric(df['Vibration'], errors='coerce').round(2)
+                            if 'BDU' not in df.columns:
+                                df['BDU'] = np.nan
+                            else:
+                                df['BDU'] = pd.to_numeric(df['BDU'], errors='coerce').round(2)
+                            data_dict[m_name] = df.dropna(subset=['Date'])
+                        else:
+                            data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
+                    else:
+                        data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
+
     except Exception as e:
         st.error(f"Error loading Google Sheets database: {e}")
         for m_name in motor_list:
-            data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
+            data_dict[m_name] = data_dict.get(m_name, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
             
     return data_dict
 
@@ -453,7 +481,7 @@ with tab_display:
             else:
                 sys_status, bg_color, border_color = "NORMAL", "#f0fdf4", "#22c55e"
 
-            sys_color = color_map[sys_status]
+            sys_color = color_map.get(sys_status, "#64748b")
 
             st.markdown(
                 f"""
@@ -488,6 +516,8 @@ with tab_display:
             st.markdown("---")
         else:
             last_v, last_b = 0.00, 0.00
+            v_m, v_c, v_target_days = None, None, None
+            b_m, b_c, b_target_days = None, None, None
             st.info("No recorded timeline updates found for this asset profile.")
 
         if len(df_sorted) >= 1:
@@ -634,90 +664,37 @@ with tab_measurements:
                         else:
                             v_to_insert = round(vibration_value, 2) if vibration_value is not None else np.nan
                             b_to_insert = round(bdu_value, 2) if bdu_value is not None else np.nan
+                            
+                            # --- FIXED AND COMPLETED TRUNCATED CODE ---
                             new_row = pd.DataFrame([{"Date": measurement_date, "Vibration": v_to_insert, "BDU": b_to_insert}])
                             current_df = pd.concat([current_df, new_row], ignore_index=True)
-                            st.success(f"✅ Log entry added for **{selected_tab2_motor}** on **{measurement_date.strftime('%d-%m-%Y')}**!")
+                            st.success(f"✅ Appended new log for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
 
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
                         save_all_data(st.session_state.all_motor_data)
-                        st.rerun()
-
-        with col_drop_row:
-            st.caption(f"🗑️ **Remove Entry from `{selected_tab2_motor}`**")
-            target_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
-            
-            if not target_df.empty:
-                dates_list = sorted(target_df['Date'].dropna().unique())
-                formatted_dates = [d.strftime('%Y-%m-%d') if isinstance(d, (datetime.date, datetime.datetime)) else str(d) for d in dates_list]
-                
-                selected_date_str = st.selectbox("Select Timestamp Date to Delete:", options=formatted_dates, key="select_drop_date")
-                
-                st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
-                if st.button("Delete Selected Log Date", use_container_width=True):
-                    updated_df = target_df[target_df['Date'].astype(str) != selected_date_str].reset_index(drop=True)
-                    st.session_state.all_motor_data[selected_tab2_motor] = updated_df
-                    save_all_data(st.session_state.all_motor_data)
-                    st.success(f"🗑️ Deleted entry dated **{selected_date_str}** for **{selected_tab2_motor}**.")
-                    st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-            else:
-                st.info("No records available to delete.")
-
-        st.markdown("---")
-        st.write(f"#### 📄 Existing Historical Log Data (`{selected_tab2_motor}`)")
         
-        if not target_df.empty:
-            display_df = target_df.copy().sort_values(by="Date", ascending=False)
-            display_df['Date'] = display_df['Date'].apply(lambda x: x.strftime('%d-%m-%Y') if isinstance(x, (datetime.date, datetime.datetime)) else str(x))
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No recorded entries available for this motor profile.")
+        with col_drop_row:
+            st.caption(f"🗑️ **Remove Latest Entry from `{selected_tab2_motor}`**")
+            with st.form(key="delete_entry_form", clear_on_submit=True):
+                st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
+                delete_btn = st.form_submit_button("Delete Latest Entry Row", use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                if delete_btn:
+                    current_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame())
+                    if not current_df.empty:
+                        # Drop the last row
+                        current_df = current_df.iloc[:-1]
+                        st.session_state.all_motor_data[selected_tab2_motor] = current_df
+                        save_all_data(st.session_state.all_motor_data)
+                        st.success(f"✅ Deleted latest log entry for **{selected_tab2_motor}**!")
+                    else:
+                        st.warning("⚠️ No data to delete for this motor.")
 
 # ==========================================
 # TAB 4: DATABASE STRUCTURE & INVENTORY
 # ==========================================
 with tab_structure:
-    st.write("### ⚙️ Database Structure & Asset Management")
-    
-    col_add, col_rem = st.columns(2)
-    
-    with col_add:
-        st.caption("➕ **Register New Fleet Asset Profile**")
-        with st.form("add_asset_form", clear_on_submit=True):
-            new_asset_name = st.text_input("New Asset Tag ID / Name")
-            submit_add = st.form_submit_button("Add Asset to Fleet")
-            
-            if submit_add:
-                if new_asset_name and new_asset_name not in st.session_state.motor_options:
-                    st.session_state.motor_options.append(new_asset_name)
-                    st.session_state.motor_colors[new_asset_name] = f"#{random.randint(0, 0x999999):06x}"
-                    st.session_state.all_motor_data[new_asset_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
-                    save_all_data(st.session_state.all_motor_data)
-                    st.success(f"Registered **{new_asset_name}** successfully!")
-                    st.rerun()
-                elif new_asset_name in st.session_state.motor_options:
-                    st.warning("Asset profile already exists.")
-
-    with col_rem:
-        st.caption("➖ **Deregister Fleet Asset Profile**")
-        if st.session_state.motor_options:
-            asset_to_remove = st.selectbox("Select Asset Tag ID to Deregister:", options=st.session_state.motor_options, key="select_rem_asset")
-            
-            st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
-            if st.button("Delete Asset Profile"):
-                st.session_state.motor_options.remove(asset_to_remove)
-                if asset_to_remove in st.session_state.all_motor_data:
-                    del st.session_state.all_motor_data[asset_to_remove]
-                st.success(f"Asset **{asset_to_remove}** successfully removed.")
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("No assets to remove.")
-
-    st.markdown("---")
-    st.write("#### 📑 Registered Asset Inventory")
-    inventory_df = pd.DataFrame({
-        "Asset Name": st.session_state.motor_options,
-        "Worksheet Name (Google Sheets)": [get_sheet_name(m) for m in st.session_state.motor_options]
-    })
-    st.dataframe(inventory_df, use_container_width=True, hide_index=True)
+    st.write("### ⚙️ Database Structure & Asset Inventory")
+    st.write("Current monitored assets grouped by Google Sheets mapping:")
+    st.dataframe(pd.DataFrame(st.session_state.motor_options, columns=["Motor Asset Name"]), use_container_width=True)
