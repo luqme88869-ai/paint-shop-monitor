@@ -190,30 +190,27 @@ def get_gspread_client():
 # Caching sheet data for 120 seconds prevents hitting 429 Quota Exceeded error on READS
 @st.cache_data(ttl=120)
 def load_all_data(motor_list):
-    """Loads all worksheets from the Google Spreadsheet into memory using Batch Operations to avoid 429 errors."""
+    """Loads all worksheets from Google Spreadsheet. STRICTLY READ-ONLY to eliminate Write Quota errors."""
     data_dict = {}
     try:
         gc = get_gspread_client()
         sheet_id = st.secrets["SPREADSHEET_ID"]
         sh = gc.open_by_key(sheet_id)
         
-        # 1 API request: Get all existing worksheets
+        # 1 Read Request: Fetch existing worksheet titles
         existing_worksheets = [ws.title for ws in sh.worksheets()]
         ranges_to_fetch = []
         
         for m_name in motor_list:
             s_name = get_sheet_name(m_name)
-            if s_name not in existing_worksheets:
-                # Create sheet automatically if it doesn't exist
-                time.sleep(1)
-                worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
-                worksheet.append_row(["Date", "Vibration", "BDU"])
-                data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
-            else:
+            if s_name in existing_worksheets:
                 ranges_to_fetch.append(f"'{s_name}'!A:C")
+            else:
+                # Strictly read-only: populate default empty DataFrame without creating sheet on Google
+                data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
         
         if ranges_to_fetch:
-            # 1 API request: Batch read all sheets at once
+            # 1 Read Request: Batch read all existing worksheets at once
             batch_data = sh.values_batch_get(ranges_to_fetch)
             value_ranges = batch_data.get('valueRanges', [])
             
@@ -252,7 +249,7 @@ def load_all_data(motor_list):
     return data_dict
 
 def save_single_motor_data(motor_name, df_to_save):
-    """Saves/Overwrites ONLY a single modified motor record to Google Sheets to avoid 429 Write limits."""
+    """Saves/Overwrites ONLY a single modified motor record to Google Sheets."""
     try:
         gc = get_gspread_client()
         sheet_id = st.secrets["SPREADSHEET_ID"]
@@ -260,6 +257,7 @@ def save_single_motor_data(motor_name, df_to_save):
         
         s_name = get_sheet_name(motor_name)
         
+        # Lazy sheet creation: create worksheet only when saving data for this motor
         try:
             worksheet = sh.worksheet(s_name)
         except gspread.exceptions.WorksheetNotFound:
@@ -276,7 +274,7 @@ def save_single_motor_data(motor_name, df_to_save):
         else:
             worksheet.update([["Date", "Vibration", "BDU"]])
         
-        # Invalidate cache on write operations so fresh data loads immediately
+        # Clear cache so next data load fetches fresh records
         st.cache_data.clear()
         
     except Exception as e:
