@@ -632,75 +632,92 @@ with tab_measurements:
                                 current_df.at[idx, 'BDU'] = round(bdu_value, 2)
                             st.success(f"✅ Updated logs for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
                         else:
-                            v_to_insert = round(vibration_value, 2) if vibration_value is not None else None
-                            b_to_insert = round(bdu_value, 2) if bdu_value is not None else None
-                            new_row = pd.DataFrame({"Date": [measurement_date], "Vibration": [v_to_insert], "BDU": [b_to_insert]})
+                            v_to_insert = round(vibration_value, 2) if vibration_value is not None else np.nan
+                            b_to_insert = round(bdu_value, 2) if bdu_value is not None else np.nan
+                            new_row = pd.DataFrame([{"Date": measurement_date, "Vibration": v_to_insert, "BDU": b_to_insert}])
                             current_df = pd.concat([current_df, new_row], ignore_index=True)
-                            st.success(f"✅ Added new entry for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
+                            st.success(f"✅ Log entry added for **{selected_tab2_motor}** on **{measurement_date.strftime('%d-%m-%Y')}**!")
 
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
                         save_all_data(st.session_state.all_motor_data)
                         st.rerun()
 
         with col_drop_row:
-            st.caption(f"🗑️ **Delete Record Row from `{selected_tab2_motor}`**")
-            current_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
-
-            if not current_df.empty:
-                dates_list = current_df['Date'].tolist()
-                date_to_delete = st.selectbox("Select Timestamp Date Row to Purge:", dates_list, format_func=lambda d: d.strftime('%d-%m-%Y') if isinstance(d, (datetime.date, datetime.datetime)) else str(d))
-
+            st.caption(f"🗑️ **Remove Entry from `{selected_tab2_motor}`**")
+            target_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
+            
+            if not target_df.empty:
+                dates_list = sorted(target_df['Date'].dropna().unique())
+                formatted_dates = [d.strftime('%Y-%m-%d') if isinstance(d, (datetime.date, datetime.datetime)) else str(d) for d in dates_list]
+                
+                selected_date_str = st.selectbox("Select Timestamp Date to Delete:", options=formatted_dates, key="select_drop_date")
+                
                 st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
-                delete_btn = st.button("Delete Selected Record Row", use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-                if delete_btn:
-                    current_df = current_df[current_df['Date'] != date_to_delete]
-                    st.session_state.all_motor_data[selected_tab2_motor] = current_df
+                if st.button("Delete Selected Log Date", use_container_width=True):
+                    updated_df = target_df[target_df['Date'].astype(str) != selected_date_str].reset_index(drop=True)
+                    st.session_state.all_motor_data[selected_tab2_motor] = updated_df
                     save_all_data(st.session_state.all_motor_data)
-                    st.success("✅ Row purged successfully.")
+                    st.success(f"🗑️ Deleted entry dated **{selected_date_str}** for **{selected_tab2_motor}**.")
                     st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
             else:
-                st.info("No recorded timeline data rows available to purge.")
+                st.info("No records available to delete.")
 
         st.markdown("---")
-        st.write(f"#### 📄 Data Table Records for `{selected_tab2_motor}`")
-        display_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
-        st.dataframe(display_df, use_container_width=True)
+        st.write(f"#### 📄 Existing Historical Log Data (`{selected_tab2_motor}`)")
+        
+        if not target_df.empty:
+            display_df = target_df.copy().sort_values(by="Date", ascending=False)
+            display_df['Date'] = display_df['Date'].apply(lambda x: x.strftime('%d-%m-%Y') if isinstance(x, (datetime.date, datetime.datetime)) else str(x))
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No recorded entries available for this motor profile.")
 
 # ==========================================
 # TAB 4: DATABASE STRUCTURE & INVENTORY
 # ==========================================
 with tab_structure:
-    st.write("### ⚙️ Asset Inventory Management")
-    st.caption("Add or remove monitored motor assets across the fleet.")
-
-    col_add, col_remove = st.columns(2)
-
+    st.write("### ⚙️ Database Structure & Asset Management")
+    
+    col_add, col_rem = st.columns(2)
+    
     with col_add:
-        st.subheader("➕ Register New Motor Asset")
-        new_motor_name = st.text_input("Asset Name / Tag Identifier:")
-        if st.button("Add Motor Asset", use_container_width=True):
-            if new_motor_name and new_motor_name not in st.session_state.motor_options:
-                st.session_state.motor_options.append(new_motor_name)
-                st.session_state.motor_colors[new_motor_name] = f"#{random.randint(0, 0x999999):06x}"
-                st.session_state.all_motor_data[new_motor_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
-                save_all_data(st.session_state.all_motor_data)
-                st.success(f"✅ Added **{new_motor_name}** to fleet registry!")
-                st.rerun()
-            elif new_motor_name in st.session_state.motor_options:
-                st.warning("⚠️ This asset is already registered.")
+        st.caption("➕ **Register New Fleet Asset Profile**")
+        with st.form("add_asset_form", clear_on_submit=True):
+            new_asset_name = st.text_input("New Asset Tag ID / Name")
+            submit_add = st.form_submit_button("Add Asset to Fleet")
+            
+            if submit_add:
+                if new_asset_name and new_asset_name not in st.session_state.motor_options:
+                    st.session_state.motor_options.append(new_asset_name)
+                    st.session_state.motor_colors[new_asset_name] = f"#{random.randint(0, 0x999999):06x}"
+                    st.session_state.all_motor_data[new_asset_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
+                    save_all_data(st.session_state.all_motor_data)
+                    st.success(f"Registered **{new_asset_name}** successfully!")
+                    st.rerun()
+                elif new_asset_name in st.session_state.motor_options:
+                    st.warning("Asset profile already exists.")
 
-    with col_remove:
-        st.subheader("➖ Unregister Motor Asset")
+    with col_rem:
+        st.caption("➖ **Deregister Fleet Asset Profile**")
         if st.session_state.motor_options:
-            motor_to_remove = st.selectbox("Select Asset to Remove:", options=st.session_state.motor_options)
-            if st.button("Purge Asset", use_container_width=True):
-                st.session_state.motor_options.remove(motor_to_remove)
-                st.session_state.all_motor_data.pop(motor_to_remove, None)
-                st.session_state.motor_colors.pop(motor_to_remove, None)
-                save_all_data(st.session_state.all_motor_data)
-                st.success(f"✅ Purged **{motor_to_remove}** from active monitoring.")
+            asset_to_remove = st.selectbox("Select Asset Tag ID to Deregister:", options=st.session_state.motor_options, key="select_rem_asset")
+            
+            st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
+            if st.button("Delete Asset Profile"):
+                st.session_state.motor_options.remove(asset_to_remove)
+                if asset_to_remove in st.session_state.all_motor_data:
+                    del st.session_state.all_motor_data[asset_to_remove]
+                st.success(f"Asset **{asset_to_remove}** successfully removed.")
                 st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
         else:
-            st.info("No active assets registered.")
+            st.info("No assets to remove.")
+
+    st.markdown("---")
+    st.write("#### 📑 Registered Asset Inventory")
+    inventory_df = pd.DataFrame({
+        "Asset Name": st.session_state.motor_options,
+        "Worksheet Name (Google Sheets)": [get_sheet_name(m) for m in st.session_state.motor_options]
+    })
+    st.dataframe(inventory_df, use_container_width=True, hide_index=True)
