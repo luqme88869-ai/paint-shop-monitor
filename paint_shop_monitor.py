@@ -187,7 +187,7 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
-# Caching sheet data for 120 seconds prevents hitting 429 Quota Exceeded error
+# Caching sheet data for 120 seconds prevents hitting 429 Quota Exceeded error on READS
 @st.cache_data(ttl=120)
 def load_all_data(motor_list):
     """Loads all worksheets from the Google Spreadsheet into memory using Batch Operations to avoid 429 errors."""
@@ -197,24 +197,23 @@ def load_all_data(motor_list):
         sheet_id = st.secrets["SPREADSHEET_ID"]
         sh = gc.open_by_key(sheet_id)
         
-        # 1 API request: Get all existing worksheets to prevent iterating sheet lookups
+        # 1 API request: Get all existing worksheets
         existing_worksheets = [ws.title for ws in sh.worksheets()]
         ranges_to_fetch = []
         
         for m_name in motor_list:
             s_name = get_sheet_name(m_name)
             if s_name not in existing_worksheets:
-                # Create sheet automatically if it doesn't exist (throttle slightly to respect write quotas)
+                # Create sheet automatically if it doesn't exist
                 time.sleep(1)
                 worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
                 worksheet.append_row(["Date", "Vibration", "BDU"])
                 data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
             else:
-                # Prepare A to C columns range for batch reading
                 ranges_to_fetch.append(f"'{s_name}'!A:C")
         
         if ranges_to_fetch:
-            # 1 API request: Batch read all sheets at once to avoid Google Sheets API 429 limits
+            # 1 API request: Batch read all sheets at once
             batch_data = sh.values_batch_get(ranges_to_fetch)
             value_ranges = batch_data.get('valueRanges', [])
             
@@ -228,7 +227,6 @@ def load_all_data(motor_list):
                     if len(rows) > 1:
                         header = rows[0]
                         data = rows[1:]
-                        # Align headers if missing columns
                         df = pd.DataFrame(data, columns=header) if len(header) >= 3 else pd.DataFrame(data)
                         if len(df.columns) >= 3:
                             df.columns = ["Date", "Vibration", "BDU"][:len(df.columns)]
@@ -253,34 +251,34 @@ def load_all_data(motor_list):
             
     return data_dict
 
-def save_all_data(data_dict):
-    """Saves/Overwrites modified motor records back to Google Sheets."""
+def save_single_motor_data(motor_name, df_to_save):
+    """Saves/Overwrites ONLY a single modified motor record to Google Sheets to avoid 429 Write limits."""
     try:
         gc = get_gspread_client()
         sheet_id = st.secrets["SPREADSHEET_ID"]
         sh = gc.open_by_key(sheet_id)
         
-        for m_name in st.session_state.motor_options:
-            df_to_save = data_dict.get(m_name, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
-            s_name = get_sheet_name(m_name)
-            
-            try:
-                worksheet = sh.worksheet(s_name)
-            except gspread.exceptions.WorksheetNotFound:
-                worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
+        s_name = get_sheet_name(motor_name)
+        
+        try:
+            worksheet = sh.worksheet(s_name)
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
 
-            worksheet.clear()
-            export_df = df_to_save.copy()
-            if not export_df.empty:
-                if 'Date' in export_df.columns:
-                    export_df['Date'] = export_df['Date'].astype(str)
-                export_df = export_df[['Date', 'Vibration', 'BDU']].fillna("")
-                worksheet.update([export_df.columns.values.tolist()] + export_df.values.tolist())
-            else:
-                worksheet.update([["Date", "Vibration", "BDU"]])
+        worksheet.clear()
+        export_df = df_to_save.copy()
+        
+        if not export_df.empty:
+            if 'Date' in export_df.columns:
+                export_df['Date'] = export_df['Date'].astype(str)
+            export_df = export_df[['Date', 'Vibration', 'BDU']].fillna("")
+            worksheet.update([export_df.columns.values.tolist()] + export_df.values.tolist())
+        else:
+            worksheet.update([["Date", "Vibration", "BDU"]])
         
         # Invalidate cache on write operations so fresh data loads immediately
         st.cache_data.clear()
+        
     except Exception as e:
         st.error(f"Failed to save changes to Google Sheets: {e}")
 
@@ -665,13 +663,12 @@ with tab_measurements:
                             v_to_insert = round(vibration_value, 2) if vibration_value is not None else np.nan
                             b_to_insert = round(bdu_value, 2) if bdu_value is not None else np.nan
                             
-                            # --- FIXED AND COMPLETED TRUNCATED CODE ---
                             new_row = pd.DataFrame([{"Date": measurement_date, "Vibration": v_to_insert, "BDU": b_to_insert}])
                             current_df = pd.concat([current_df, new_row], ignore_index=True)
                             st.success(f"✅ Appended new log for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
 
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
-                        save_all_data(st.session_state.all_motor_data)
+                        save_single_motor_data(selected_tab2_motor, current_df)
         
         with col_drop_row:
             st.caption(f"🗑️ **Remove Latest Entry from `{selected_tab2_motor}`**")
@@ -686,7 +683,7 @@ with tab_measurements:
                         # Drop the last row
                         current_df = current_df.iloc[:-1]
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
-                        save_all_data(st.session_state.all_motor_data)
+                        save_single_motor_data(selected_tab2_motor, current_df)
                         st.success(f"✅ Deleted latest log entry for **{selected_tab2_motor}**!")
                     else:
                         st.warning("⚠️ No data to delete for this motor.")
