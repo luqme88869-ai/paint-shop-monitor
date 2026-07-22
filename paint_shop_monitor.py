@@ -380,28 +380,28 @@ with tab_overview:
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown('<div class="fleet-all-container">', unsafe_allow_html=True)
-            if st.button(f"Total Fleet Motors\n\n### {len(st.session_state.motor_options)}", key="btn_filter_all", use_container_width=True):
+            if st.button(f"Total Fleet Motors\n\n {len(st.session_state.motor_options)}", key="btn_filter_all", use_container_width=True):
                 st.session_state.active_fleet_filter = "ALL"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
                 
         with c2:
             st.markdown('<div class="fleet-normal-container">', unsafe_allow_html=True)
-            if st.button(f"Healthy (NORMAL)\n\n### {normal_count}", key="btn_filter_normal", use_container_width=True):
+            if st.button(f"Healthy (NORMAL)\n\n {normal_count}", key="btn_filter_normal", use_container_width=True):
                 st.session_state.active_fleet_filter = "NORMAL"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
                 
         with c3:
             st.markdown('<div class="fleet-warning-container">', unsafe_allow_html=True)
-            if st.button(f"Caution (WARNING)\n\n### {warning_count}", key="btn_filter_warning", use_container_width=True):
+            if st.button(f"Caution (WARNING)\n\n {warning_count}", key="btn_filter_warning", use_container_width=True):
                 st.session_state.active_fleet_filter = "WARNING"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
                 
         with c4:
             st.markdown('<div class="fleet-critical-container">', unsafe_allow_html=True)
-            if st.button(f"Action Required (CRITICAL)\n\n### {critical_count}", key="btn_filter_critical", use_container_width=True):
+            if st.button(f"Action Required (CRITICAL)\n\n {critical_count}", key="btn_filter_critical", use_container_width=True):
                 st.session_state.active_fleet_filter = "CRITICAL"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
