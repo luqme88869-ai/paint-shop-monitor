@@ -176,10 +176,8 @@ SCOPES = [
 
 @st.cache_resource
 def get_gspread_client():
-    """Initializes Google Sheets API Connection using secrets configuration."""
     creds_dict = dict(st.secrets["gcp_service_account"])
     
-    # Automatically convert literal '\n' text into real line breaks
     if "private_key" in creds_dict:
         pk = creds_dict["private_key"]
         pk = pk.replace("\\n", "\n").replace("\\\\n", "\n")
@@ -187,7 +185,6 @@ def get_gspread_client():
 
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
-
 def load_all_data():
     """Loads all worksheets from the Google Spreadsheet into memory."""
     data_dict = {}
