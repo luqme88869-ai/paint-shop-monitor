@@ -178,8 +178,13 @@ SCOPES = [
 def get_gspread_client():
     """Initializes Google Sheets API Connection using secrets configuration."""
     creds_dict = dict(st.secrets["gcp_service_account"])
+    
+    # Automatically convert literal '\n' text into real line breaks
     if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        pk = creds_dict["private_key"]
+        pk = pk.replace("\\n", "\n").replace("\\\\n", "\n")
+        creds_dict["private_key"] = pk
+
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
