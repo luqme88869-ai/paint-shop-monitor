@@ -20,11 +20,9 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- THRESHOLD CONFIGURATION BOUNDARIES ---
-# Threshold Constraints (vRMS) - Standardized to 2 decimal places
 VRMS_THRESHOLD = 4.50  # Critical Limit (Red)
 VRMS_WARNING = 2.80    # Warning Limit (Yellow)
 
-# Threshold Constraints (BDU) - Standardized to 2 decimal places
 BDU_THRESHOLD = 100.00   # Critical Limit (Red)
 BDU_WARNING = 70.00      # Warning Limit (Yellow)
 
@@ -187,17 +185,15 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
-# Caching sheet data for 120 seconds prevents hitting 429 Quota Exceeded error on READS
 @st.cache_data(ttl=120)
 def load_all_data(motor_list):
-    """Loads all worksheets from Google Spreadsheet. STRICTLY READ-ONLY to eliminate Write Quota errors."""
+    """Loads all worksheets from Google Spreadsheet. STRICTLY READ-ONLY."""
     data_dict = {}
     try:
         gc = get_gspread_client()
         sheet_id = st.secrets["SPREADSHEET_ID"]
         sh = gc.open_by_key(sheet_id)
         
-        # 1 Read Request: Fetch existing worksheet titles
         existing_worksheets = [ws.title for ws in sh.worksheets()]
         ranges_to_fetch = []
         
@@ -206,11 +202,9 @@ def load_all_data(motor_list):
             if s_name in existing_worksheets:
                 ranges_to_fetch.append(f"'{s_name}'!A:C")
             else:
-                # Strictly read-only: populate default empty DataFrame without creating sheet on Google
                 data_dict[m_name] = pd.DataFrame(columns=["Date", "Vibration", "BDU"])
         
         if ranges_to_fetch:
-            # 1 Read Request: Batch read all existing worksheets at once
             batch_data = sh.values_batch_get(ranges_to_fetch)
             value_ranges = batch_data.get('valueRanges', [])
             
@@ -248,41 +242,49 @@ def load_all_data(motor_list):
             
     return data_dict
 
-def save_single_motor_data(motor_name, df_to_save):
-    """Saves/Overwrites ONLY a single modified motor record to Google Sheets."""
-    try:
-        gc = get_gspread_client()
-        sheet_id = st.secrets["SPREADSHEET_ID"]
-        sh = gc.open_by_key(sheet_id)
-        
-        s_name = get_sheet_name(motor_name)
-        
-        # Lazy sheet creation: create worksheet only when saving data for this motor
+def save_single_motor_data(motor_name, df_to_save, max_retries=3):
+    """Saves ONLY a single modified motor record with retry logic for API Rate Limits."""
+    s_name = get_sheet_name(motor_name)
+    
+    for attempt in range(max_retries):
         try:
-            worksheet = sh.worksheet(s_name)
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
+            gc = get_gspread_client()
+            sheet_id = st.secrets["SPREADSHEET_ID"]
+            sh = gc.open_by_key(sheet_id)
+            
+            try:
+                worksheet = sh.worksheet(s_name)
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = sh.add_worksheet(title=s_name, rows="100", cols="5")
 
-        worksheet.clear()
-        export_df = df_to_save.copy()
-        
-        if not export_df.empty:
-            if 'Date' in export_df.columns:
-                export_df['Date'] = export_df['Date'].astype(str)
-            export_df = export_df[['Date', 'Vibration', 'BDU']].fillna("")
-            worksheet.update([export_df.columns.values.tolist()] + export_df.values.tolist())
-        else:
-            worksheet.update([["Date", "Vibration", "BDU"]])
-        
-        # Clear cache so next data load fetches fresh records
-        st.cache_data.clear()
-        
-    except Exception as e:
-        st.error(f"Failed to save changes to Google Sheets: {e}")
+            export_df = df_to_save.copy()
+            if not export_df.empty:
+                if 'Date' in export_df.columns:
+                    export_df['Date'] = export_df['Date'].astype(str)
+                export_df = export_df[['Date', 'Vibration', 'BDU']].fillna("")
+                data_to_write = [export_df.columns.values.tolist()] + export_df.values.tolist()
+            else:
+                data_to_write = [["Date", "Vibration", "BDU"]]
+
+            worksheet.clear()
+            worksheet.update(data_to_write)
+            
+            st.cache_data.clear()
+            return True
+
+        except gspread.exceptions.APIError as e:
+            if "429" in str(e) and attempt < max_retries - 1:
+                wait_seconds = (attempt + 1) * 3
+                time.sleep(wait_seconds)
+            else:
+                st.error(f"Failed to save changes to Google Sheets: {e}")
+                return False
+        except Exception as e:
+            st.error(f"Failed to save changes to Google Sheets: {e}")
+            return False
 
 # --- FORECASTING ENGINE: LEAST SQUARES ---
 def calculate_forecast(df, metric, threshold):
-    """Calculates intercept and slope using np.polyfit to predict date reaching threshold."""
     valid_df = df.dropna(subset=[metric, 'Days'])
     if len(valid_df) < 2:
         return None, None, None, None
@@ -290,7 +292,6 @@ def calculate_forecast(df, metric, threshold):
     x = valid_df['Days'].values
     y = valid_df[metric].values
     
-    # m = slope, c = intercept
     m, c = np.polyfit(x, y, 1)
     
     if m <= 0:
@@ -491,7 +492,6 @@ with tab_display:
             v_date_pred, v_m, v_c, v_target_days = calculate_forecast(df_sorted, "Vibration", VRMS_THRESHOLD)
             b_date_pred, b_m, b_c, b_target_days = calculate_forecast(df_sorted, "BDU", BDU_THRESHOLD)
             
-            # OVERRIDE DATE DISPLAY IF CURRENT READING IS EQUAL OR GREATER THAN CRITICAL
             if last_v >= VRMS_THRESHOLD:
                 v_date_display = "⚠️ Maintenance Required"
             else:
@@ -656,17 +656,17 @@ with tab_measurements:
                                 current_df.at[idx, 'Vibration'] = round(vibration_value, 2)
                             if bdu_value is not None:
                                 current_df.at[idx, 'BDU'] = round(bdu_value, 2)
-                            st.success(f"✅ Updated logs for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
                         else:
                             v_to_insert = round(vibration_value, 2) if vibration_value is not None else np.nan
                             b_to_insert = round(bdu_value, 2) if bdu_value is not None else np.nan
                             
                             new_row = pd.DataFrame([{"Date": measurement_date, "Vibration": v_to_insert, "BDU": b_to_insert}])
                             current_df = pd.concat([current_df, new_row], ignore_index=True)
-                            st.success(f"✅ Appended new log for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
 
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
-                        save_single_motor_data(selected_tab2_motor, current_df)
+                        success = save_single_motor_data(selected_tab2_motor, current_df)
+                        if success:
+                            st.success(f"✅ Log entry saved for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
         
         with col_drop_row:
             st.caption(f"🗑️ **Remove Latest Entry from `{selected_tab2_motor}`**")
@@ -678,11 +678,11 @@ with tab_measurements:
                 if delete_btn:
                     current_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame())
                     if not current_df.empty:
-                        # Drop the last row
                         current_df = current_df.iloc[:-1]
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
-                        save_single_motor_data(selected_tab2_motor, current_df)
-                        st.success(f"✅ Deleted latest log entry for **{selected_tab2_motor}**!")
+                        success = save_single_motor_data(selected_tab2_motor, current_df)
+                        if success:
+                            st.success(f"✅ Deleted latest log entry for **{selected_tab2_motor}**!")
                     else:
                         st.warning("⚠️ No data to delete for this motor.")
 
