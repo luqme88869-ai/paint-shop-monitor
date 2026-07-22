@@ -628,6 +628,7 @@ with tab_measurements:
         
         col_log, col_drop_row = st.columns(2)
         
+        # --- LEFT COLUMN: APPEND / UPDATE ENTRY ---
         with col_log:
             st.caption(f"📋 **Append Log Entry to `{selected_tab2_motor}`**")
             
@@ -666,29 +667,48 @@ with tab_measurements:
                         st.session_state.all_motor_data[selected_tab2_motor] = current_df
                         success = save_single_motor_data(selected_tab2_motor, current_df)
                         if success:
-                            st.success(f"✅ Log entry saved for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
+                            st.success(f"✅ Log entry saved for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d/%m/%Y')}**!")
                             st.rerun()
-        
+
+        # --- RIGHT COLUMN: DELETE ENTRY BY SPECIFIC DATE ---
         with col_drop_row:
-            st.caption(f"🗑️ **Remove Latest Entry from `{selected_tab2_motor}`**")
-            with st.form(key="delete_entry_form", clear_on_submit=True):
-                st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
-                delete_btn = st.form_submit_button("Delete Latest Entry Row", use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+            st.caption(f"🗑️ **Remove Entry by Date from `{selected_tab2_motor}`**")
+            
+            current_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame())
+            
+            if not current_df.empty and 'Date' in current_df.columns:
+                # Extract unique dates and sort newest to oldest
+                parsed_dates = pd.to_datetime(current_df['Date'], errors='coerce').dt.date.dropna().unique()
+                available_dates = sorted(parsed_dates, reverse=True)
+                
+                if available_dates:
+                    with st.form(key="delete_entry_form", clear_on_submit=True):
+                        selected_date_to_delete = st.selectbox(
+                            "Select Date to Delete:",
+                            options=available_dates,
+                            format_func=lambda d: d.strftime('%d/%m/%Y')
+                        )
 
-                if delete_btn:
-                    current_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame())
-                    if not current_df.empty:
-                        current_df = current_df.iloc[:-1]
-                        st.session_state.all_motor_data[selected_tab2_motor] = current_df
-                        success = save_single_motor_data(selected_tab2_motor, current_df)
-                        if success:
-                            st.success(f"✅ Deleted latest log entry for **{selected_tab2_motor}**!")
-                            st.rerun()
-                    else:
-                        st.warning("⚠️ No data to delete for this motor.")
+                        st.markdown('<div class="execute-red-container">', unsafe_allow_html=True)
+                        delete_btn = st.form_submit_button("Delete Selected Entry Row", use_container_width=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
 
-        # --- NEW: HISTORICAL MEASUREMENTS TABLE ---
+                        if delete_btn and selected_date_to_delete:
+                            # Filter out selected date row
+                            current_df['Date_Temp'] = pd.to_datetime(current_df['Date'], errors='coerce').dt.date
+                            updated_df = current_df[current_df['Date_Temp'] != selected_date_to_delete].drop(columns=['Date_Temp'])
+                            
+                            st.session_state.all_motor_data[selected_tab2_motor] = updated_df
+                            success = save_single_motor_data(selected_tab2_motor, updated_df)
+                            if success:
+                                st.success(f"✅ Deleted entry for **{selected_tab2_motor}** on **{selected_date_to_delete.strftime('%d/%m/%Y')}**!")
+                                st.rerun()
+                else:
+                    st.info("ℹ️ No valid dates found to delete for this motor.")
+            else:
+                st.info("ℹ️ No recorded readings available to delete for this motor.")
+
+        # --- BOTTOM: HISTORICAL READINGS TABLE ---
         st.markdown("---")
         st.write(f"#### 📜 Historical Readings Table for **{selected_tab2_motor}**")
 
@@ -697,24 +717,24 @@ with tab_measurements:
         if not current_df.empty:
             display_df = current_df.copy()
             
-            # Convert and format Date for display
+            # Format date column
             display_df['Date'] = pd.to_datetime(display_df['Date'], errors='coerce').dt.strftime('%d/%m/%Y')
             
-            # Format numbers to 2 decimal places
-            display_df['Vibration'] = display_df['Vibration'].apply(lambda x: f"{float(x):.2f}" if pd.notnull(x) and x != "" else "-")
-            display_df['BDU'] = display_df['BDU'].apply(lambda x: f"{float(x):.2f}" if pd.notnull(x) and x != "" else "-")
+            # Format metrics to 2 decimal places
+            display_df['Vibration'] = display_df['Vibration'].apply(lambda x: f"{float(x):.2f}" if pd.notnull(x) and str(x).strip() != "" else "-")
+            display_df['BDU'] = display_df['BDU'].apply(lambda x: f"{float(x):.2f}" if pd.notnull(x) and str(x).strip() != "" else "-")
 
-            # Rename columns for clear layout
+            # Rename columns for clarity
             display_df = display_df.rename(columns={
                 "Date": "Date",
                 "Vibration": "vRMS (mm/s)",
                 "BDU": "BDU Reading"
             })
 
-            # Show newest entries at the top
+            # Reverse rows to show newest first
             display_df = display_df.iloc[::-1].reset_index(drop=True)
 
-            # Display table
+            # Render full-width table
             st.dataframe(
                 display_df,
                 use_container_width=True,
@@ -722,7 +742,8 @@ with tab_measurements:
             )
         else:
             st.info("ℹ️ No historical measurement readings recorded for this motor yet.")
-            
+    else:
+        st.info("💡 No assets registered. Please check the 'Database Structure' tab.")
 # ==========================================
 # TAB 4: DATABASE STRUCTURE & INVENTORY
 # ==========================================
