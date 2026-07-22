@@ -667,6 +667,7 @@ with tab_measurements:
                         success = save_single_motor_data(selected_tab2_motor, current_df)
                         if success:
                             st.success(f"✅ Log entry saved for **{selected_tab2_motor}** on date **{measurement_date.strftime('%d-%m-%Y')}**!")
+                            st.rerun()
         
         with col_drop_row:
             st.caption(f"🗑️ **Remove Latest Entry from `{selected_tab2_motor}`**")
@@ -683,9 +684,45 @@ with tab_measurements:
                         success = save_single_motor_data(selected_tab2_motor, current_df)
                         if success:
                             st.success(f"✅ Deleted latest log entry for **{selected_tab2_motor}**!")
+                            st.rerun()
                     else:
                         st.warning("⚠️ No data to delete for this motor.")
 
+        # --- NEW: HISTORICAL MEASUREMENTS TABLE ---
+        st.markdown("---")
+        st.write(f"#### 📜 Historical Readings Table for **{selected_tab2_motor}**")
+
+        current_df = st.session_state.all_motor_data.get(selected_tab2_motor, pd.DataFrame(columns=["Date", "Vibration", "BDU"]))
+
+        if not current_df.empty:
+            display_df = current_df.copy()
+            
+            # Convert and format Date for display
+            display_df['Date'] = pd.to_datetime(display_df['Date'], errors='coerce').dt.strftime('%d/%m/%Y')
+            
+            # Format numbers to 2 decimal places
+            display_df['Vibration'] = display_df['Vibration'].apply(lambda x: f"{float(x):.2f}" if pd.notnull(x) and x != "" else "-")
+            display_df['BDU'] = display_df['BDU'].apply(lambda x: f"{float(x):.2f}" if pd.notnull(x) and x != "" else "-")
+
+            # Rename columns for clear layout
+            display_df = display_df.rename(columns={
+                "Date": "Date",
+                "Vibration": "vRMS (mm/s)",
+                "BDU": "BDU Reading"
+            })
+
+            # Show newest entries at the top
+            display_df = display_df.iloc[::-1].reset_index(drop=True)
+
+            # Display table
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("ℹ️ No historical measurement readings recorded for this motor yet.")
+            
 # ==========================================
 # TAB 4: DATABASE STRUCTURE & INVENTORY
 # ==========================================
